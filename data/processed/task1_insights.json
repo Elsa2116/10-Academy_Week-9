@@ -1,0 +1,17 @@
+{
+  "tsla_total_return_pct": 2716.834440238627,
+  "tsla_annualized_volatility_pct": 56.1299156055107,
+  "tsla_sharpe_ratio": 0.7445395759116714,
+  "tsla_var_95_daily_pct": 5.109612813043802,
+  "n_outliers_tsla": 50,
+  "prices_stationary": {
+    "TSLA_price": "non-stationary",
+    "BND_price": "non-stationary",
+    "SPY_price": "non-stationary"
+  },
+  "returns_stationary": {
+    "TSLA_return": "stationary",
+    "BND_return": "stationary",
+    "SPY_return": "stationary"
+  }
+}

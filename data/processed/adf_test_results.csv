@@ -1,0 +1,7 @@
+series,adf_statistic,p_value,verdict
+TSLA_price,-1.03869201137257,0.7388920890165438,non-stationary
+TSLA_return,-55.14976432620231,0.0,stationary
+BND_price,-1.1165809747333846,0.7084145134466384,non-stationary
+BND_return,-21.27714358919999,0.0,stationary
+SPY_price,1.4333473730492197,0.9972604912376205,non-stationary
+SPY_return,-15.700587193582876,1.3977071657751932e-28,stationary

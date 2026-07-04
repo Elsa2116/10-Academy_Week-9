@@ -1,0 +1,12 @@
+{
+  "last_actual_price": 411.8399963378906,
+  "forecast_horizon_days": 252,
+  "forecast_end_price_mean": 445.249760441353,
+  "forecast_end_price_lower_95": 221.96538716786554,
+  "forecast_end_price_upper_95": 668.5341337148404,
+  "total_expected_return_pct": 8.112316530823694,
+  "annualized_forecast_return_pct": 8.112316530823694,
+  "ci_width_day1": 28.13118682516972,
+  "ci_width_final": 446.5687465469749,
+  "ci_widening_factor": 15.874507866387564
+}

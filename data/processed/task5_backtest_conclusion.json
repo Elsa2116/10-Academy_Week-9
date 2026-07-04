@@ -1,0 +1,15 @@
+{
+  "strategy_metrics": {
+    "total_return_pct": 28.59777192628805,
+    "annualized_return_pct": 17.696366004524954,
+    "sharpe_ratio": 0.9039082256941301,
+    "max_drawdown_pct": -18.755221196416628
+  },
+  "benchmark_metrics": {
+    "total_return_pct": 20.2934021141703,
+    "annualized_return_pct": 12.715032197745945,
+    "sharpe_ratio": 0.9782406761780782,
+    "max_drawdown_pct": -11.248371333026142
+  },
+  "strategy_outperformed_benchmark": true
+}
