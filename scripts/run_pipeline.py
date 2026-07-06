@@ -11,6 +11,7 @@ Usage:
 """
 
 import json
+import logging
 import os
 import sys
 import warnings
@@ -28,6 +29,9 @@ import pandas as pd
 import seaborn as sns
 
 from src import data_loader, eda, arima_model, lstm_model, portfolio, backtest
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 sns.set_theme(style="whitegrid", palette="deep")
 plt.rcParams["figure.dpi"] = 130
@@ -47,7 +51,7 @@ def save_fig(fig, name):
     path = os.path.join(FIG_DIR, name)
     fig.savefig(path)
     plt.close(fig)
-    print(f"  saved {path}")
+    logger.info("Saved figure %s", path)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -55,8 +59,16 @@ def save_fig(fig, name):
 # ═══════════════════════════════════════════════════════════════════════════
 def task1_eda():
     print("\n=== TASK 1: Preprocess and Explore the Data ===")
-    raw = data_loader.fetch_asset_data()
-    cleaned = data_loader.clean_asset_data(raw)
+    try:
+        raw = data_loader.fetch_asset_data()
+    except Exception as exc:
+        raise RuntimeError("Task 1 failed while downloading historical asset data") from exc
+
+    try:
+        cleaned = data_loader.clean_asset_data(raw)
+    except Exception as exc:
+        raise RuntimeError("Task 1 failed while cleaning historical asset data") from exc
+
     quality_report = data_loader.data_quality_report(raw, cleaned)
     quality_report.to_csv(f"{PROC_DIR}/data_quality_report.csv", index=False)
     print(quality_report.to_string(index=False))
@@ -160,11 +172,14 @@ def task2_models(prices: pd.DataFrame):
 
     # ---- ARIMA ----
     print("\nRunning auto_arima to find best (p,d,q)...")
-    order, seasonal_order, auto_model = arima_model.find_best_order(train, seasonal=False)
-    print(f"Best ARIMA order: {order}")
-    arima_fitted = arima_model.fit_arima(train, order)
+    try:
+        order, seasonal_order, auto_model = arima_model.find_best_order(train, seasonal=False)
+        print(f"Best ARIMA order: {order}")
+        arima_fitted = arima_model.fit_arima(train, order)
+        arima_forecast, arima_lower, arima_upper = arima_model.forecast_arima(arima_fitted, steps=len(test))
+    except Exception as exc:
+        raise RuntimeError("Task 2 failed during ARIMA model selection, fitting, or forecasting") from exc
 
-    arima_forecast, arima_lower, arima_upper = arima_model.forecast_arima(arima_fitted, steps=len(test))
     arima_forecast.index = test.index
     arima_lower.index = test.index
     arima_upper.index = test.index
@@ -189,17 +204,17 @@ def task2_models(prices: pd.DataFrame):
     test_vals = test.values.astype("float32")
     lookback_vals = np.concatenate([train_vals[-window:], test_vals])
 
-    train_scaled, lookback_scaled, scaler = lstm_model.train_test_scale(train_vals, lookback_vals)
-
-    X_train, y_train = lstm_model.make_sequences(train_scaled, window=window)
-    X_test, y_test = lstm_model.make_sequences(lookback_scaled, window=window)
-
-    model = lstm_model.build_lstm_model(window=window, units=32, dropout=0.2, learning_rate=0.001)
-    history = lstm_model.fit(model, X_train, y_train, epochs=10, batch_size=64,
-                              learning_rate=0.001, validation_split=0.1)
-
-    lstm_pred_scaled = lstm_model.predict(model, X_test)
-    lstm_pred = scaler.inverse_transform(lstm_pred_scaled).flatten()
+    try:
+        train_scaled, lookback_scaled, scaler = lstm_model.train_test_scale(train_vals, lookback_vals)
+        X_train, y_train = lstm_model.make_sequences(train_scaled, window=window)
+        X_test, y_test = lstm_model.make_sequences(lookback_scaled, window=window)
+        model = lstm_model.build_lstm_model(window=window, units=32, dropout=0.2, learning_rate=0.001)
+        history = lstm_model.fit(model, X_train, y_train, epochs=10, batch_size=64,
+                                  learning_rate=0.001, validation_split=0.1)
+        lstm_pred_scaled = lstm_model.predict(model, X_test)
+        lstm_pred = scaler.inverse_transform(lstm_pred_scaled).flatten()
+    except Exception as exc:
+        raise RuntimeError("Task 2 failed during LSTM preprocessing, fitting, or inference") from exc
 
     lstm_mae = float(np.mean(np.abs(lstm_pred - test_vals)))
     lstm_rmse = float(np.sqrt(np.mean((lstm_pred - test_vals) ** 2)))
@@ -262,8 +277,12 @@ def task3_forecast(prices: pd.DataFrame, task2_results: dict):
     future_dates = pd.bdate_range(start=last_date + pd.Timedelta(days=1), periods=horizon_days)
 
     order = task2_results["order"]
-    full_model_fit = arima_model.fit_arima(tsla, order)
-    forecast_mean, forecast_lower, forecast_upper = arima_model.forecast_arima(full_model_fit, steps=horizon_days)
+    try:
+        full_model_fit = arima_model.fit_arima(tsla, order)
+        forecast_mean, forecast_lower, forecast_upper = arima_model.forecast_arima(full_model_fit, steps=horizon_days)
+    except Exception as exc:
+        raise RuntimeError("Task 3 failed while fitting or forecasting the full-horizon ARIMA model") from exc
+
     forecast_mean.index = future_dates
     forecast_lower.index = future_dates
     forecast_upper.index = future_dates
@@ -318,18 +337,21 @@ def task3_forecast(prices: pd.DataFrame, task2_results: dict):
 # ═══════════════════════════════════════════════════════════════════════════
 def task4_portfolio(returns: pd.DataFrame, tsla_forecast_annual_return: float):
     print("\n=== TASK 4: Optimize Portfolio Based on Forecast ===")
-    mu = portfolio.build_expected_returns(returns, tsla_forecast_annual_return)
-    cov = portfolio.build_covariance_matrix(returns)
+    try:
+        mu = portfolio.build_expected_returns(returns, tsla_forecast_annual_return)
+        cov = portfolio.build_covariance_matrix(returns)
+        vols, rets, weights_list = portfolio.efficient_frontier_points(mu, cov, n_points=50)
+        max_sharpe_w, max_sharpe_perf = portfolio.max_sharpe_portfolio(mu, cov)
+        min_vol_w, min_vol_perf = portfolio.min_volatility_portfolio(mu, cov)
+    except Exception as exc:
+        raise RuntimeError("Task 4 failed while building or solving the portfolio optimization problem") from exc
+
     print("Expected annual returns (mu):\n", mu.round(4))
 
     fig, ax = plt.subplots(figsize=(6, 5))
     sns.heatmap(cov, annot=True, fmt=".4f", cmap="coolwarm", ax=ax, square=True, cbar_kws={"label": "Covariance"})
     ax.set_title("Annualized Covariance Matrix (TSLA / BND / SPY)")
     save_fig(fig, "11_covariance_heatmap.png")
-
-    vols, rets, weights_list = portfolio.efficient_frontier_points(mu, cov, n_points=50)
-    max_sharpe_w, max_sharpe_perf = portfolio.max_sharpe_portfolio(mu, cov)
-    min_vol_w, min_vol_perf = portfolio.min_volatility_portfolio(mu, cov)
 
     fig, ax = plt.subplots(figsize=(9, 6.5))
     ax.plot(vols, rets, "b--", linewidth=1.5, label="Efficient Frontier")
@@ -410,25 +432,30 @@ def task5_backtest(returns: pd.DataFrame, recommendation: dict):
 
 
 def main(only=None):
-    prices, returns, stats = task1_eda()
-    if only == "1":
-        return
-    task2_results = task2_models(prices)
-    if only == "2":
-        return
-    forecast_summary, tsla_annual_return = task3_forecast(prices, task2_results)
-    if only == "3":
-        return
-    recommendation = task4_portfolio(returns, tsla_annual_return)
-    if only == "4":
-        return
-    metrics_df, outperformed = task5_backtest(returns, recommendation)
+    try:
+        prices, returns, stats = task1_eda()
+        if only == "1":
+            return 0
+        task2_results = task2_models(prices)
+        if only == "2":
+            return 0
+        forecast_summary, tsla_annual_return = task3_forecast(prices, task2_results)
+        if only == "3":
+            return 0
+        recommendation = task4_portfolio(returns, tsla_annual_return)
+        if only == "4":
+            return 0
+        metrics_df, outperformed = task5_backtest(returns, recommendation)
 
-    print("\n" + "=" * 60)
-    print("PIPELINE COMPLETE — all artifacts saved to data/processed/ and reports/figures/")
-    print("=" * 60)
+        print("\n" + "=" * 60)
+        print("PIPELINE COMPLETE — all artifacts saved to data/processed/ and reports/figures/")
+        print("=" * 60)
+        return 0
+    except Exception:
+        logger.exception("Pipeline execution failed")
+        return 1
 
 
 if __name__ == "__main__":
     only_arg = sys.argv[1] if len(sys.argv) > 1 else None
-    main(only=only_arg)
+    sys.exit(main(only=only_arg))

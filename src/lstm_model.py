@@ -3,6 +3,8 @@ Deep-learning forecasting: LSTM model for Tesla (TSLA) closing-price
 sequence prediction. Implemented in PyTorch (CPU-only).
 """
 
+import logging
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -10,6 +12,8 @@ from sklearn.preprocessing import MinMaxScaler
 
 torch.manual_seed(42)
 torch.set_num_threads(1)
+
+logger = logging.getLogger(__name__)
 
 
 class LSTMForecaster(nn.Module):
@@ -57,6 +61,11 @@ def build_lstm_model(window: int = 60, units: int = 50, dropout: float = 0.2, le
 
 def train_test_scale(train_prices: np.ndarray, test_prices: np.ndarray):
     """Fit a MinMaxScaler on training prices and transform both splits."""
+    if train_prices is None or len(train_prices) == 0:
+        raise ValueError("train_test_scale requires non-empty training prices")
+    if test_prices is None or len(test_prices) == 0:
+        raise ValueError("train_test_scale requires non-empty test prices")
+
     scaler = MinMaxScaler(feature_range=(0, 1))
     train_scaled = scaler.fit_transform(train_prices.reshape(-1, 1))
     test_scaled = scaler.transform(test_prices.reshape(-1, 1))
@@ -68,47 +77,67 @@ def fit(model, X_train, y_train, epochs=15, batch_size=32, learning_rate=0.001, 
     Train the PyTorch LSTM model with mini-batch gradient descent.
     Returns a history dict with 'loss' and 'val_loss' lists (mirrors Keras API).
     """
+    if X_train is None or y_train is None or len(X_train) == 0 or len(y_train) == 0:
+        raise ValueError("fit requires non-empty training sequences and targets")
+    if not 0 <= validation_split < 1:
+        raise ValueError("validation_split must be in the range [0, 1)")
+    if epochs <= 0:
+        raise ValueError("epochs must be a positive integer")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be a positive integer")
+
     n = len(X_train)
     n_val = int(n * validation_split)
     n_train = n - n_val
+
+    if n_train <= 0:
+        raise ValueError("validation_split leaves no training samples for LSTM fitting")
 
     X_t = torch.from_numpy(X_train[:n_train])
     y_t = torch.from_numpy(y_train[:n_train]).unsqueeze(1)
     X_v = torch.from_numpy(X_train[n_train:])
     y_v = torch.from_numpy(y_train[n_train:]).unsqueeze(1)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    loss_fn = nn.MSELoss()
+    logger.info("Training LSTM for %d epochs with batch size %d", epochs, batch_size)
+    try:
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        loss_fn = nn.MSELoss()
 
-    history = {"loss": [], "val_loss": []}
-    for epoch in range(epochs):
-        model.train()
-        perm = torch.randperm(n_train)
-        epoch_losses = []
-        for i in range(0, n_train, batch_size):
-            idx = perm[i:i + batch_size]
-            xb, yb = X_t[idx], y_t[idx]
-            optimizer.zero_grad()
-            pred = model(xb)
-            loss = loss_fn(pred, yb)
-            loss.backward()
-            optimizer.step()
-            epoch_losses.append(loss.item())
-        train_loss = float(np.mean(epoch_losses))
+        history = {"loss": [], "val_loss": []}
+        for epoch in range(epochs):
+            model.train()
+            perm = torch.randperm(n_train)
+            epoch_losses = []
+            for i in range(0, n_train, batch_size):
+                idx = perm[i:i + batch_size]
+                xb, yb = X_t[idx], y_t[idx]
+                optimizer.zero_grad()
+                pred = model(xb)
+                loss = loss_fn(pred, yb)
+                loss.backward()
+                optimizer.step()
+                epoch_losses.append(loss.item())
+            train_loss = float(np.mean(epoch_losses))
 
-        model.eval()
-        with torch.no_grad():
-            val_pred = model(X_v) if n_val > 0 else None
-            val_loss = float(loss_fn(val_pred, y_v).item()) if n_val > 0 else train_loss
+            model.eval()
+            with torch.no_grad():
+                val_pred = model(X_v) if n_val > 0 else None
+                val_loss = float(loss_fn(val_pred, y_v).item()) if n_val > 0 else train_loss
 
-        history["loss"].append(train_loss)
-        history["val_loss"].append(val_loss)
+            history["loss"].append(train_loss)
+            history["val_loss"].append(val_loss)
+            logger.info("Epoch %d/%d - loss: %.6f - val_loss: %.6f", epoch + 1, epochs, train_loss, val_loss)
 
-    return history
+        return history
+    except Exception as exc:
+        raise RuntimeError("LSTM training failed") from exc
 
 
 def predict(model, X):
     """Run inference on a batch of sequences; returns a numpy array of predictions."""
+    if X is None or len(X) == 0:
+        raise ValueError("predict requires a non-empty input array")
+
     model.eval()
     with torch.no_grad():
         X_t = torch.from_numpy(X.astype("float32"))
@@ -122,14 +151,22 @@ def iterative_forecast(model, last_window: np.ndarray, steps: int, scaler):
     in as input for the next step (multi-step forecasting).
     `last_window` should be scaled and shaped (window, 1).
     """
+    if last_window is None or len(last_window) == 0:
+        raise ValueError("iterative_forecast requires a non-empty last_window")
+    if steps <= 0:
+        raise ValueError("iterative_forecast requires steps to be positive")
+
     window = last_window.copy()
     preds_scaled = []
     model.eval()
-    for _ in range(steps):
-        x = torch.from_numpy(window.reshape(1, window.shape[0], 1).astype("float32"))
-        with torch.no_grad():
-            next_scaled = model(x).numpy()[0, 0]
-        preds_scaled.append(next_scaled)
-        window = np.append(window[1:], [[next_scaled]], axis=0)
-    preds_scaled = np.array(preds_scaled).reshape(-1, 1)
-    return scaler.inverse_transform(preds_scaled).flatten()
+    try:
+        for _ in range(steps):
+            x = torch.from_numpy(window.reshape(1, window.shape[0], 1).astype("float32"))
+            with torch.no_grad():
+                next_scaled = model(x).numpy()[0, 0]
+            preds_scaled.append(next_scaled)
+            window = np.append(window[1:], [[next_scaled]], axis=0)
+        preds_scaled = np.array(preds_scaled).reshape(-1, 1)
+        return scaler.inverse_transform(preds_scaled).flatten()
+    except Exception as exc:
+        raise RuntimeError(f"Iterative LSTM forecasting failed for horizon {steps}") from exc
