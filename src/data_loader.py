@@ -13,7 +13,6 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 TICKERS = ["TSLA", "BND", "SPY"]
@@ -28,19 +27,50 @@ def fetch_asset_data(tickers=TICKERS, start=START_DATE, end=END_DATE, cache_dir=
     Results are cached to disk as CSV files so repeated runs do not
     re-hit the network. Returns a dict of {ticker: DataFrame}.
     """
+    if not tickers:
+        raise ValueError("fetch_asset_data requires at least one ticker symbol")
+
     os.makedirs(cache_dir, exist_ok=True)
     data = {}
     for ticker in tickers:
         cache_path = os.path.join(cache_dir, f"{ticker}.csv")
         if os.path.exists(cache_path):
-            logger.info(f"Loading cached data for {ticker} from {cache_path}")
-            df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
+            logger.info("Loading cached data for %s from %s", ticker, cache_path)
+            try:
+                df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to read cached data for %s from %s; falling back to download: %s",
+                    ticker,
+                    cache_path,
+                    exc,
+                )
+                df = pd.DataFrame()
         else:
-            logger.info(f"Fetching {ticker} from Yahoo Finance ({start} to {end})")
-            df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
+            df = pd.DataFrame()
+
+        if df.empty:
+            logger.info("Fetching %s from Yahoo Finance (%s to %s)", ticker, start, end)
+            try:
+                df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to download historical data for {ticker} from Yahoo Finance "
+                    f"for the range {start} to {end}"
+                ) from exc
+
+            if df.empty:
+                raise RuntimeError(
+                    f"Yahoo Finance returned no rows for {ticker} between {start} and {end}"
+                )
+
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
-            df.to_csv(cache_path)
+
+            try:
+                df.to_csv(cache_path)
+            except Exception as exc:
+                logger.warning("Failed to cache %s data to %s: %s", ticker, cache_path, exc)
         data[ticker] = df
     return data
 
@@ -53,9 +83,15 @@ def clean_asset_data(data: dict) -> dict:
       - drop fully empty rows
       - enforce numeric dtypes
     """
+    if not data:
+        raise ValueError("clean_asset_data requires a non-empty data dictionary")
+
     cleaned = {}
     business_days = None
     for ticker, df in data.items():
+        if df is None or df.empty:
+            raise ValueError(f"clean_asset_data received empty data for ticker '{ticker}'")
+
         df = df.copy()
         df.index = pd.to_datetime(df.index)
         df = df.sort_index()
@@ -66,9 +102,14 @@ def clean_asset_data(data: dict) -> dict:
         if business_days is None:
             business_days = df.index
 
-    full_range = pd.date_range(start=min(df.index.min() for df in cleaned.values()),
-                                end=max(df.index.max() for df in cleaned.values()),
-                                freq="B")
+    if not cleaned:
+        raise ValueError("clean_asset_data could not clean any assets")
+
+    full_range = pd.date_range(
+        start=min(df.index.min() for df in cleaned.values()),
+        end=max(df.index.max() for df in cleaned.values()),
+        freq="B",
+    )
 
     for ticker, df in cleaned.items():
         missing_before = full_range.difference(df.index)
@@ -82,6 +123,10 @@ def clean_asset_data(data: dict) -> dict:
 
 def combine_asset_data(data: dict, field="Adj Close") -> pd.DataFrame:
     """Combine a single field (default Adj Close) from each asset into one wide DataFrame."""
+    missing_field = [ticker for ticker, df in data.items() if field not in df.columns]
+    if missing_field:
+        raise KeyError(f"Cannot combine field '{field}' because it is missing for: {', '.join(missing_field)}")
+
     combined = pd.DataFrame({ticker: df[field] for ticker, df in data.items()})
     combined.index.name = "Date"
     return combined
